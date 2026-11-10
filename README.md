@@ -64,10 +64,10 @@ python -m crm.train --data .rafdb --prior c.npy --semantics sem.npz \
     --batch-size 4 --accum 16 --epochs 24 --out crm_best.pth
 ```
 
-> **AMP note.** On some GPUs mixed precision produced non-finite gradients in the
-> Sinkhorn branch. The training loop skips non-finite batches and sanitises gradients,
-> but if you see `nan` losses, set `AMP=0` (pure fp32). All reported numbers were
-> obtained with `AMP=0`.
+> **Mixed precision.** Mixed precision produced non-finite gradients in the Sinkhorn
+> branch on our GPU, so `AMP=0` disables mixed precision **entirely** (both `autocast`
+> and the gradient scaler) and trains in plain fp32. Every number reported in the paper
+> was obtained this way. `AMP=1` (the default) keeps autocast + `GradScaler` on.
 
 ## Figures
 
