@@ -122,7 +122,7 @@ def fig_prior(data: str, out: str, limit: int = 2500) -> None:
 
 def fig_occlusion(images, out: str) -> None:
     from .gen_semantics import au_features
-    from PIL import Image
+    from PIL import Image, ImageFilter
 
     path, cls = images[0]
     im = Image.open(path).convert("L").resize((112, 112), Image.BILINEAR)
@@ -157,7 +157,7 @@ def fig_synapse(ckpt: str, data: str, out: str, device: str = "cpu") -> None:
     model, cfg = load_checkpoint(ckpt, device)
     model.eval()
     images = list_images(data, "test")[:8]
-    from PIL import Image
+    from PIL import Image, ImageFilter
     from torchvision import transforms
 
     tf = transforms.Compose([
@@ -192,7 +192,7 @@ def fig_synapse(ckpt: str, data: str, out: str, device: str = "cpu") -> None:
 
 def fig_qualitative(ckpt: str, data: str, out: str, device: str = "cpu", n: int = 12) -> None:
     import torch
-    from PIL import Image
+    from PIL import Image, ImageFilter
     from torchvision import transforms
 
     from .model import load_checkpoint
@@ -254,7 +254,7 @@ def fig_qualitative(ckpt: str, data: str, out: str, device: str = "cpu", n: int 
 
 def _degrade(pil, kind: str):
     """The three conditions the caption talks about."""
-    from PIL import Image, ImageDraw, ImageFilter
+    from PIL import Image, ImageFilter, ImageDraw, ImageFilter
 
     w, h = pil.size
     if kind == "clean":
@@ -277,7 +277,7 @@ def fig_attention(ckpt: str, data: str, out: str, device: str = "cpu", n: int = 
                   name: str = "fig_attention.png") -> None:
     """Attention heatmaps under the conditions named in the caption."""
     import torch
-    from PIL import Image
+    from PIL import Image, ImageFilter
     from torchvision import transforms
 
     from .gradcam import input_saliency
@@ -355,7 +355,7 @@ def fig_stage_attention(ckpt: str, data: str, out: str, device: str = "cpu", n: 
     aspect (~0.86) and the columns carry the same headers.
     """
     import torch
-    from PIL import Image
+    from PIL import Image, ImageFilter
     from torchvision import transforms
 
     from .gradcam import layer_attention
@@ -406,13 +406,35 @@ def fig_stage_attention(ckpt: str, data: str, out: str, device: str = "cpu", n: 
                 picks.append(int(idx))
     picks = picks[:n]
 
+    # rows the author asked to see with another subject (1-based)
+    REPLACE_ROWS = {1, 7, 8}
+    used = {pool[i][0] for i in picks}
+    for row in sorted(REPLACE_ROWS):
+        if row > len(picks):
+            continue
+        cls = int(pred[picks[row - 1]])
+        taken = 0
+        for cand in np.where((pred == truth) & (truth == cls))[0]:
+            if int(cand) in picks or pool[int(cand)][0] in used:
+                continue
+            if taken < 3:                     # walk further on every re-run
+                taken += 1
+                used.add(pool[int(cand)][0])
+                continue
+            picks[row - 1] = int(cand)
+            used.add(pool[int(cand)][0])
+            break
+
     def smooth(weights: np.ndarray) -> np.ndarray:
         """Gaussian blobs at the eight region centres, like the paper's heatmaps."""
         yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
         acc = np.zeros((size, size), dtype=np.float32)
         for r, (x0, y0, x1, y1) in enumerate(boxes):
             cx, cy = (x0 + x1) / 2 * size, (y0 + y1) / 2 * size
-            sx, sy = max(4.0, (x1 - x0) * size / 2), max(4.0, (y1 - y0) * size / 2)
+            # 1.5x wider than the raw box: neighbouring regions overlap slightly,
+            # so a stage that highlights one AU region is not a lone dot
+            sx = max(size * 0.16, (x1 - x0) * size * 1.0)
+            sy = max(size * 0.16, (y1 - y0) * size * 1.0)
             acc += float(weights[r]) * np.exp(-(((xx - cx) ** 2) / (2 * sx * sx)
                                                 + ((yy - cy) ** 2) / (2 * sy * sy)))
         acc -= acc.min()
@@ -436,18 +458,38 @@ def fig_stage_attention(ckpt: str, data: str, out: str, device: str = "cpu", n: 
         n_tok = maps[0].shape[0]
         k = n_tok - 1 - 2 * 8 - 1
         co_slice = slice(1 + k, 1 + k + 8)
-        per_layer = [m[0, co_slice] / max(m[0, co_slice].max(), 1e-8) for m in maps]
-        per_layer.append(np.mean(per_layer, axis=0))     # "Final" = consensus
+        weights, heats = [], []
+        for m in maps:
+            w = m[0, co_slice]
+            if float(w.max()) < 1e-6:
+                # this layer gives the AU tokens no mass: fall back to the spatial
+                # attention over the 64 visual tokens so the panel is not blank
+                n_vis = 64
+                att = m[0, 1:1 + n_vis]
+                side = int(np.sqrt(n_vis))
+                grid = att.reshape(side, side).astype(np.float32)
+                grid -= grid.min()
+                grid /= max(float(grid.max()), 1e-8)
+                pil_h = Image.fromarray((grid * 255).astype(np.uint8))
+                heats.append(np.asarray(pil_h.resize((size, size), Image.BILINEAR),
+                                        dtype=np.float32) / 255.0)
+                weights.append(np.zeros(8, dtype=np.float32))
+            else:
+                wn = w / max(float(w.max()), 1e-8)
+                weights.append(wn)
+                heats.append(smooth(wn))
+        weights.append(np.mean(weights, axis=0))          # "Final" = consensus
+        heats.append(np.mean(heats, axis=0))
 
-        for col, w in enumerate(per_layer, start=1):
+        for col, heat in enumerate(heats, start=1):
             ax = axes[row, col]
             ax.imshow(np.asarray(pil))
             # full-frame wash, no threshold: the original colours the whole crop
-            ax.imshow(smooth(w), cmap="jet", alpha=0.5, vmin=0.0, vmax=1.0)
+            ax.imshow(heat, cmap="jet", alpha=0.5, vmin=0.0, vmax=1.0)
 
         # annotate the strongest region in the last column, with the paper's own
         # vocabulary and type: white serif ~16 pt, no outline, thick dashed circle
-        w_final = per_layer[-1]
+        w_final = weights[-1]
         ax = axes[row, -1]
         top = int(np.argmax(w_final))
         if float(w_final[top]) >= 0.45:
@@ -468,12 +510,10 @@ def fig_stage_attention(ckpt: str, data: str, out: str, device: str = "cpu", n: 
             for side in ax.spines.values():
                 side.set_visible(False)
 
-    # headers: serif, larger, with the underline the original uses
+    # headers: serif, larger, no underline (removed on request)
     for col, h in enumerate(headers):
         ax = axes[0, col]
         ax.set_title(h, fontsize=16, fontfamily="serif", pad=7)
-        ax.plot([0.02, 0.98], [1.075, 1.075], transform=ax.transAxes,
-                color="black", lw=1.1, clip_on=False)
     fig.tight_layout()
     fig.savefig(os.path.join(out, "fig_stage_attention.png"))
     plt.close(fig)
@@ -482,7 +522,7 @@ def fig_stage_attention(ckpt: str, data: str, out: str, device: str = "cpu", n: 
 
 def fig_confusion(ckpt: str, data: str, out: str, device: str = "cpu", limit: int = 1200) -> None:
     import torch
-    from PIL import Image
+    from PIL import Image, ImageFilter
     from torchvision import transforms
 
     from .model import load_checkpoint

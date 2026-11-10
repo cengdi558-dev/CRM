@@ -13,17 +13,18 @@ import numpy as np
 import timm
 import torch
 import torch.nn.functional as F
-from PIL import Image, ImageFilter, ImageOps, ImageDraw
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps, ImageDraw
 from torchvision import transforms
 
+from .final_fig9 import gradcam, ours_map
 from crm.model import load_checkpoint
 from crm.regions import boxes_from_points
 
-from scripts._common import MEAN, STD, SIZE, gradcam, ours_map
-
+MEAN = [0.485, 0.456, 0.406]
+STD = [0.229, 0.224, 0.225]
 DATA = os.environ.get("RAFDB_DIR", ".rafdb")
 OUT = "figs"
-BASELINE_DIR = os.environ.get("BASELINE_DIR", "checkpoints/compare")
+SIZE = 224
 
 
 def degrade(name, im):
@@ -48,7 +49,7 @@ def degrade(name, im):
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    conditions = ["Occlusion", "Low resolution", "Blur", "Rotation", "Low light"]
+    conditions = ["Occlusion", "Low resolution", "Blur", "Rotation", "Low contrast"]
     root = os.path.join(DATA, "val")
     classes = [c for c in sorted(os.listdir(root)) if os.path.isdir(os.path.join(root, c))]
     base = []
@@ -79,7 +80,7 @@ def main():
                              transforms.Normalize(MEAN, STD)])
     nets = {}
     for name in ("resnet50", "swin_tiny_patch4_window7_224"):
-        ck = torch.load(os.path.join(BASELINE_DIR, f"{name}.pth"), map_location="cpu")
+        ck = torch.load(os.path.join(os.environ.get("BASELINE_DIR", "checkpoints/compare"), f"{name}.pth"), map_location="cpu")
         m = timm.create_model(name, pretrained=False, num_classes=len(ck["classes"]))
         m.load_state_dict(ck["model"])
         m.eval()
@@ -98,13 +99,19 @@ def main():
             cells[name] = gradcam(m, x, pred)
         cells["CRM w/o COR"] = ours_map(noc, degraded)
         cells["CRM"] = ours_map(crm, degraded)
+        for k, v in list(cells.items()):
+            if k == "Origin":
+                continue
+            hi = float(np.percentile(v, 99.0))
+            cells[k] = np.clip(v / max(hi, 1e-6), 0.0, 1.0)
         rows.append((cond, degraded, cells))
         print("row done:", cond, flush=True)
 
     cols = ["Origin", "CRM w/o COR", "ResNet-50", "Swin-T", "CRM"]
     keys = ["Origin", "CRM w/o COR", "resnet50", "swin_tiny_patch4_window7_224", "CRM"]
     n_rows, n_cols = len(rows), 1 + len(cols)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(1.6 * n_cols, 1.7 * n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(9.3, 8.0),
+                             gridspec_kw={"width_ratios": [0.75] + [1.0] * (n_cols - 1)})
     axes = np.atleast_2d(axes)
     for r, (cond, _img, cells) in enumerate(rows):
         lab = axes[r, 0]
