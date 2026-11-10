@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.rafdb/
+figs/
+checkpoints/
+*.pth
+*.npz
+*.npy
+*.log
+*.tgz
+.DS_Store
