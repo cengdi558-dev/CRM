@@ -1,4 +1,4 @@
-﻿"""Training entry point, following the repo's data conventions.
+"""Training entry point, following the repo's data conventions.
 
 The original ``utilities/train_*.py`` scripts use ``datasets.ImageFolder`` with
 ``train/`` and ``val/`` sub-folders and AdamW + cosine. This script keeps that
@@ -210,7 +210,7 @@ def main() -> None:
             sem = batch[2].to(device) if len(batch) > 2 else None
             x = occlude_batch(x, args.occlude, rng)
 
-            with _autocast(device == "cuda"):
+            with _autocast(AMP_ENABLED and device == "cuda"):
                 out = model(x, semantics=sem)
                 losses = criterion(out, y, model.prior)
 
@@ -244,7 +244,7 @@ def main() -> None:
             for batch in val_loader:
                 x, y = batch[0].to(device), batch[1].to(device)
                 sem = batch[2].to(device) if len(batch) > 2 else None
-                with _autocast(device == "cuda"):
+                with _autocast(AMP_ENABLED and device == "cuda"):
                     out = model(x, semantics=sem)
                     losses = criterion(out, y, model.prior)
                 v_total += losses["loss"].item() * y.numel()
